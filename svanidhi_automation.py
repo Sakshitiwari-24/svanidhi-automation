@@ -249,6 +249,21 @@ def column_map(heads):
     return m
 
 
+def disable_animations(page):
+    """Disables CSS modal fade/transition animations so popups open and close in 0ms without affecting accuracy."""
+    try:
+        page.evaluate("""() => {
+            if (!document.getElementById('svanidhi-fast-style')) {
+                const style = document.createElement('style');
+                style.id = 'svanidhi-fast-style';
+                style.textContent = '*, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }';
+                document.head.appendChild(style);
+            }
+        }""")
+    except Exception:
+        pass
+
+
 def table(page):
     tbl = page.locator(SEL["table"]).first
     tbl.wait_for(state="visible", timeout=10000)
@@ -256,14 +271,19 @@ def table(page):
 
 
 def read_table(page):
-    tbl = table(page)
-    data = tbl.evaluate("""tbl => {
+    data = page.evaluate("""() => {
+        const tbl = Array.from(document.querySelectorAll('table')).find(t =>
+            /scheme\\s+stage/i.test(t.innerText || '')
+        );
+        if (!tbl) return null;
         const heads = Array.from(tbl.querySelectorAll('thead th')).map(th => th.innerText || '');
         const rows = Array.from(tbl.querySelectorAll('tbody tr')).map(tr =>
             Array.from(tr.querySelectorAll('td')).map(td => td.innerText || '')
         );
         return { heads, rows };
     }""")
+    if not data:
+        raise PortalError("Scheme table not visible yet")
     heads = [norm(h) for h in data["heads"]]
     col = column_map(heads)
     max_col = max(col.values())
@@ -302,7 +322,7 @@ def search(page, app: str, delay: float):
     deadline = time.time() + 20
     rows = col = None
     while time.time() < deadline:
-        time.sleep(0.12)
+        time.sleep(0.05)
         try:
             rows, col = read_table(page)
         except Exception:
@@ -353,7 +373,7 @@ def wait_stage(page, app: str, scheme: str, want: str, delay: float):
     for attempt in range(2):
         end = time.time() + (3.5 if attempt == 0 else 10)
         while time.time() < end:
-            time.sleep(0.12)
+            time.sleep(0.05)
             try:
                 rows, col = read_table(page)
                 row = pick_row(rows, app, scheme)
@@ -501,7 +521,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="search and report only; change nothing")
     ap.add_argument("--limit", type=int, help="process at most N applications")
     ap.add_argument("--app", action="append", help="only this Application No. (repeatable)")
-    ap.add_argument("--delay", type=float, default=0.1, help="seconds to pause after each action (default: 0.1)")
+    ap.add_argument("--delay", type=float, default=0.0, help="seconds to pause after each action (default: 0.0)")
     ap.add_argument("--save-every", type=int, default=5,
                     help="save Excel workbook every N completed applications (default: 5; always saves on exit/error)")
     ap.add_argument("--allow-extra-portal", action="store_true", default=True,
@@ -564,6 +584,7 @@ def main():
                         print(f"  [{i}] {pg.url}")
                 sys.exit("\nPlease log in and navigate to the 'Vendor Scheme Tracker' page in that Chrome window first.")
             page.bring_to_front()
+            disable_animations(page)
 
             if args.inspect:
                 inspect(page, appkey(args.inspect), args.delay)
