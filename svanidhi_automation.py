@@ -664,6 +664,11 @@ async def async_main():
                     tag = f"{prefix} " if prefix else ""
                     print(f"\n{tag}[{n}/{len(todo)}] {app}  {vendor}")
                     try:
+                        if pg.is_closed():
+                            pg = await ctx.new_page()
+                            await pg.goto(base_url, wait_until="domcontentloaded", timeout=30000)
+                            await table(pg)
+                            await prepare_tab(ctx, pg)
                         dirty = await process_app(pg, app, groups[app], args, ws, cols, log, prefix=prefix)
                         ok.append(app)
                         if dirty:
@@ -671,15 +676,21 @@ async def async_main():
                             if unsaved_changes >= save_every:
                                 save_excel_atomic(wb, xlsx)
                                 unsaved_changes = 0
+                    except (KeyboardInterrupt, asyncio.CancelledError):
+                        stop_flag = True
+                        break
                     except PermissionError:
                         stop_flag = True
                         sys.exit(f"Could not save Excel file '{xlsx.name}' (is it open in Excel?). Stopped; re-run is safe.")
                     except Exception as e:
+                        if "Target page, context or browser has been closed" in str(e) and stop_flag:
+                            break
                         failed.append((app, str(e)))
                         log("", app, "", "app", "ERROR", str(e), prefix=prefix)
                         try:
-                            await pg.screenshot(path=str(log.dir / f"error-{app}-{datetime.now():%H%M%S}.png"))
-                            await pg.keyboard.press("Escape")
+                            if not pg.is_closed():
+                                await pg.screenshot(path=str(log.dir / f"error-{app}-{datetime.now():%H%M%S}.png"))
+                                await pg.keyboard.press("Escape")
                         except Exception:
                             pass
                         if args.stop_on_error:
@@ -689,6 +700,8 @@ async def async_main():
                         queue.task_done()
 
             await asyncio.gather(*(worker_loop(i + 1, pg) for i, pg in enumerate(worker_pages)))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("\n[STOPPED] Interrupted by user (Ctrl+C). Saving progress...")
     finally:
         if unsaved_changes > 0 and not args.dry_run and not args.inspect:
             try:
@@ -706,7 +719,10 @@ async def async_main():
 
 
 def main():
-    asyncio.run(async_main())
+    try:
+        asyncio.run(async_main())
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":
