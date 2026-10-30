@@ -257,13 +257,19 @@ def table(page):
 
 def read_table(page):
     tbl = table(page)
-    heads = [norm(h) for h in tbl.locator("thead th").all_inner_texts()]
+    data = tbl.evaluate("""tbl => {
+        const heads = Array.from(tbl.querySelectorAll('thead th')).map(th => th.innerText || '');
+        const rows = Array.from(tbl.querySelectorAll('tbody tr')).map(tr =>
+            Array.from(tr.querySelectorAll('td')).map(td => td.innerText || '')
+        );
+        return { heads, rows };
+    }""")
+    heads = [norm(h) for h in data["heads"]]
     col = column_map(heads)
-    trs = tbl.locator("tbody tr")
+    max_col = max(col.values())
     rows = []
-    for i in range(trs.count()):
-        tds = trs.nth(i).locator("td").all_inner_texts()
-        if len(tds) <= max(col.values()):
+    for i, tds in enumerate(data["rows"]):
+        if len(tds) <= max_col:
             continue  # "No data" row
         rows.append(Row(i, canon(tds[col["scheme"]]), appkey(tds[col["app"]]), norm(tds[col["stage"]])))
     return rows, col
@@ -291,14 +297,12 @@ def set_max_page_size(page):
 
 def search(page, app: str, delay: float):
     inp = app_input(page)
-    inp.click()
-    inp.fill("")
     inp.fill(app)
     page.locator(SEL["search_btn"]).first.click()
     deadline = time.time() + 20
     rows = col = None
     while time.time() < deadline:
-        time.sleep(0.5)
+        time.sleep(0.12)
         try:
             rows, col = read_table(page)
         except Exception:
@@ -308,24 +312,30 @@ def search(page, app: str, delay: float):
             break
     else:
         raise PortalError(f"Search results for {app} did not load / no rows returned")
-    total = footer_total(page)
-    if total is not None and total != len(rows):
-        set_max_page_size(page)
-        rows, col = read_table(page)
+    # Pagination check only needed if 10+ rows are visible (minimum portal page size is 10)
+    if len(rows) >= 10:
         total = footer_total(page)
         if total is not None and total != len(rows):
-            raise PortalError(f"Portal lists {total} entries but only {len(rows)} rows are visible (pagination)")
-    time.sleep(delay)
+            set_max_page_size(page)
+            rows, col = read_table(page)
+            total = footer_total(page)
+            if total is not None and total != len(rows):
+                raise PortalError(f"Portal lists {total} entries but only {len(rows)} rows are visible (pagination)")
+    if delay > 0:
+        time.sleep(delay)
     return rows, col
+
+
+def pick_row(rows, app: str, scheme: str):
+    hits = [r for r in rows if r.app == app and r.scheme == scheme]
+    if len(hits) != 1:
+        raise PortalError(f"Expected exactly 1 portal row for '{scheme}', found {len(hits)}")
+    return hits[0]
 
 
 def find_row(page, app: str, scheme: str):
     rows, col = read_table(page)
-    rows = [r for r in rows if r.app == app]
-    hits = [r for r in rows if r.scheme == scheme]
-    if len(hits) != 1:
-        raise PortalError(f"Expected exactly 1 portal row for '{scheme}', found {len(hits)}")
-    return hits[0], col
+    return pick_row(rows, app, scheme), col
 
 
 def wait_dialog(page, text_regex: str, timeout=8000):
@@ -339,39 +349,42 @@ def dialog_button(dlg, label_regex: str):
 
 
 def wait_stage(page, app: str, scheme: str, want: str, delay: float):
-    """Poll until the scheme row shows the wanted stage (re-pressing Search once if stale)."""
+    """Poll rapidly until the scheme row shows the wanted stage (re-pressing Search quickly if stale)."""
     for attempt in range(2):
-        end = time.time() + (15 if attempt == 0 else 10)
+        end = time.time() + (3.5 if attempt == 0 else 10)
         while time.time() < end:
-            time.sleep(0.6)
+            time.sleep(0.12)
             try:
-                row, _ = find_row(page, app, scheme)
-            except PortalError:
+                rows, col = read_table(page)
+                row = pick_row(rows, app, scheme)
+            except Exception:
                 continue
             if row.stage == want:
-                time.sleep(delay)
-                return
+                if delay > 0:
+                    time.sleep(delay)
+                return rows, col
         page.locator(SEL["search_btn"]).first.click()
     raise PortalError(f"'{scheme}' did not reach stage '{want}'")
 
 
-def do_apply(page, app: str, scheme: str, ref: str, delay: float):
-    row, col = find_row(page, app, scheme)
+def do_apply(page, app: str, scheme: str, ref: str, delay: float, row=None, col=None):
+    if row is None or col is None:
+        row, col = find_row(page, app, scheme)
     cell = table(page).locator("tbody tr").nth(row.i).locator("td").nth(col["apply"])
     cell.locator(SEL["icon"]).first.click()
     dlg = wait_dialog(page, APPLY_DIALOG_TEXT)
     box = dlg.locator(SEL["dialog_input"]).first
-    box.fill("")
     box.fill(ref)
     if box.input_value().strip() != ref:
         raise PortalError("Reference No was not typed correctly into the popup")
     dialog_button(dlg, r"^\s*submit\s*$").click()
     dlg.wait_for(state="hidden", timeout=10000)
-    wait_stage(page, app, scheme, "applied", delay)
+    return wait_stage(page, app, scheme, "applied", delay)
 
 
-def do_sanction(page, app: str, scheme: str, delay: float):
-    row, col = find_row(page, app, scheme)
+def do_sanction(page, app: str, scheme: str, delay: float, row=None, col=None):
+    if row is None or col is None:
+        row, col = find_row(page, app, scheme)
     cell = table(page).locator("tbody tr").nth(row.i).locator("td").nth(col["sanction"])
     cell.locator(SEL["icon"]).first.click()
     dlg = wait_dialog(page, SANCTION_DIALOG_TEXT)
@@ -381,7 +394,7 @@ def do_sanction(page, app: str, scheme: str, delay: float):
         raise PortalError(f"Unexpected confirmation dialog: '{text[:80]}'")
     dialog_button(dlg, r"^\s*yes\s*$").click()
     dlg.wait_for(state="hidden", timeout=10000)
-    wait_stage(page, app, scheme, "sanctioned", delay)
+    return wait_stage(page, app, scheme, "sanctioned", delay)
 
 
 # ============================== MAIN LOGIC ===================================
@@ -403,7 +416,7 @@ class Logger:
         print(f"   [{result:7}] {action:10} {scheme}  {detail}")
 
 
-def process_app(page, app, all_items, args, ws, cols, wb, xlsx, log):
+def process_app(page, app, all_items, args, ws, cols, log):
     pending = [i for i in all_items if i.status == PENDING_STATUS]
 
     # ---- sanity checks on the Excel side
@@ -414,7 +427,7 @@ def process_app(page, app, all_items, args, ws, cols, wb, xlsx, log):
         check_ref(it, not args.no_prefix_check)
 
     # ---- search and reconcile with the portal
-    rows, _ = search(page, app, args.delay)
+    rows, col = search(page, app, args.delay)
     portal = Counter(r.scheme for r in rows)
     dup_p = [s for s, n in portal.items() if n > 1]
     if dup_p:
@@ -439,13 +452,13 @@ def process_app(page, app, all_items, args, ws, cols, wb, xlsx, log):
             plan = {"eligible": f"apply ref {it.ref} then sanction",
                     "applied": "sanction only", "sanctioned": "already sanctioned -> mark Excel"}.get(st, f"UNEXPECTED stage '{st}'")
             log(it.row, app, it.scheme_raw, "plan", "DRY", plan)
-        return
+        return False
 
     # ---- phase 1: Apply (reference number entry)
     for it in pending:
-        row, _ = find_row(page, app, it.scheme)
+        row = pick_row(rows, app, it.scheme)
         if row.stage == "eligible":
-            do_apply(page, app, it.scheme, it.ref, args.delay)
+            rows, col = do_apply(page, app, it.scheme, it.ref, args.delay, row=row, col=col)
             log(it.row, app, it.scheme_raw, "apply", "OK", it.ref)
         elif row.stage in ("applied", "sanctioned"):
             log(it.row, app, it.scheme_raw, "apply", "SKIP", f"already {row.stage}")
@@ -454,18 +467,18 @@ def process_app(page, app, all_items, args, ws, cols, wb, xlsx, log):
 
     # ---- phase 2: Sanction
     for it in pending:
-        row, _ = find_row(page, app, it.scheme)
+        row = pick_row(rows, app, it.scheme)
         if row.stage == "applied":
-            do_sanction(page, app, it.scheme, args.delay)
+            rows, col = do_sanction(page, app, it.scheme, args.delay, row=row, col=col)
             log(it.row, app, it.scheme_raw, "sanction", "OK")
         elif row.stage == "sanctioned":
             log(it.row, app, it.scheme_raw, "sanction", "SKIP", "already sanctioned")
         else:
             raise PortalError(f"'{it.scheme_raw}' is '{row.stage}', expected applied/sanctioned")
-        # portal confirmed -> record in Excel
+        # portal confirmed -> record in Excel memory
         ws.cell(it.row, cols["status"]).value = DONE_STATUS_TEXT
         log(it.row, app, it.scheme_raw, "excel", "OK", f"Status -> {DONE_STATUS_TEXT}")
-    wb.save(xlsx)
+    return True
 
 
 def inspect(page, app, delay):
@@ -488,7 +501,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="search and report only; change nothing")
     ap.add_argument("--limit", type=int, help="process at most N applications")
     ap.add_argument("--app", action="append", help="only this Application No. (repeatable)")
-    ap.add_argument("--delay", type=float, default=0.7, help="seconds to pause after each action")
+    ap.add_argument("--delay", type=float, default=0.1, help="seconds to pause after each action (default: 0.1)")
+    ap.add_argument("--save-every", type=int, default=5,
+                    help="save Excel workbook every N completed applications (default: 5; always saves on exit/error)")
     ap.add_argument("--allow-extra-portal", action="store_true", default=True,
                     help="ignore portal schemes that are not in Excel (enabled by default)")
     ap.add_argument("--strict-portal", action="store_true",
@@ -528,46 +543,62 @@ def main():
 
     log = Logger(Path(args.logdir))
     ok, failed = [], []
-    with sync_playwright() as p:
-        try:
-            browser = p.chromium.connect_over_cdp(args.cdp)
-        except Exception as e:
-            sys.exit(f"Cannot connect to Chrome at {args.cdp}. Start Chrome with --remote-debugging-port=9222.\n{e}")
-        pages = [pg for c in browser.contexts for pg in c.pages]
-        page = next((pg for pg in pages if any(k in pg.url.lower() for k in ["schemestracker", "scheme-tracker", "vendor-scheme", "tracker"])), None)
-        if page is None:
-            print("ERROR: Could not find the 'Vendor Scheme Tracker' page tab in Chrome.")
-            print("Currently open tabs:")
-            for i, pg in enumerate(pages, 1):
-                try:
-                    print(f"  [{i}] {pg.title()} -> {pg.url}")
-                except Exception:
-                    print(f"  [{i}] {pg.url}")
-            sys.exit("\nPlease log in and navigate to the 'Vendor Scheme Tracker' page in that Chrome window first.")
-        page.bring_to_front()
+    unsaved_changes = 0
+    save_every = max(1, args.save_every)
 
-        if args.inspect:
-            inspect(page, appkey(args.inspect), args.delay)
-            return
-
-        for n, app in enumerate(todo, 1):
-            vendor = groups[app][0].vendor
-            print(f"\n[{n}/{len(todo)}] {app}  {vendor}")
+    try:
+        with sync_playwright() as p:
             try:
-                process_app(page, app, groups[app], args, ws, cols, wb, xlsx, log)
-                ok.append(app)
-            except PermissionError:
-                sys.exit(f"Could not save Excel file '{xlsx.name}' (is it open in Excel?). Stopped; re-run is safe.")
+                browser = p.chromium.connect_over_cdp(args.cdp)
             except Exception as e:
-                failed.append((app, str(e)))
-                log("", app, "", "app", "ERROR", str(e))
+                sys.exit(f"Cannot connect to Chrome at {args.cdp}. Start Chrome with --remote-debugging-port=9222.\n{e}")
+            pages = [pg for c in browser.contexts for pg in c.pages]
+            page = next((pg for pg in pages if any(k in pg.url.lower() for k in ["schemestracker", "scheme-tracker", "vendor-scheme", "tracker"])), None)
+            if page is None:
+                print("ERROR: Could not find the 'Vendor Scheme Tracker' page tab in Chrome.")
+                print("Currently open tabs:")
+                for i, pg in enumerate(pages, 1):
+                    try:
+                        print(f"  [{i}] {pg.title()} -> {pg.url}")
+                    except Exception:
+                        print(f"  [{i}] {pg.url}")
+                sys.exit("\nPlease log in and navigate to the 'Vendor Scheme Tracker' page in that Chrome window first.")
+            page.bring_to_front()
+
+            if args.inspect:
+                inspect(page, appkey(args.inspect), args.delay)
+                return
+
+            for n, app in enumerate(todo, 1):
+                vendor = groups[app][0].vendor
+                print(f"\n[{n}/{len(todo)}] {app}  {vendor}")
                 try:
-                    page.screenshot(path=str(log.dir / f"error-{app}-{datetime.now():%H%M%S}.png"))
-                    page.keyboard.press("Escape")
-                except Exception:
-                    pass
-                if args.stop_on_error:
-                    break
+                    dirty = process_app(page, app, groups[app], args, ws, cols, log)
+                    ok.append(app)
+                    if dirty:
+                        unsaved_changes += 1
+                        if unsaved_changes >= save_every:
+                            wb.save(xlsx)
+                            unsaved_changes = 0
+                except PermissionError:
+                    sys.exit(f"Could not save Excel file '{xlsx.name}' (is it open in Excel?). Stopped; re-run is safe.")
+                except Exception as e:
+                    failed.append((app, str(e)))
+                    log("", app, "", "app", "ERROR", str(e))
+                    try:
+                        page.screenshot(path=str(log.dir / f"error-{app}-{datetime.now():%H%M%S}.png"))
+                        page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+                    if args.stop_on_error:
+                        break
+    finally:
+        if unsaved_changes > 0 and not args.dry_run and not args.inspect:
+            try:
+                wb.save(xlsx)
+                print(f"\n[SAVED] Flushed final Excel updates to '{xlsx.name}'.")
+            except Exception as e:
+                print(f"\n[ERROR] Could not save final Excel updates to '{xlsx.name}': {e}")
 
     print("\n================ SUMMARY ================")
     print(f"Completed : {len(ok)}")
