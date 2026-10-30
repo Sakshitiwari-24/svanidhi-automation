@@ -1,6 +1,6 @@
 # 🏛️ PM SVANidhi — Vendor Scheme Tracker Automation Suite
 
-[![Vercel Live Hub](https://img.shields.io/badge/Vercel-Live_Portal_%26_Script_Hub-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://svanidhi-automation.vercel.app)
+[![Vercel Live Hub](https://img.shields.io/badge/Vercel-Live_Portal_%26_Script_Hub-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://svanidhi-automation-sakshitiwari-24s-projects.vercel.app)
 [![GitHub Pages Live](https://img.shields.io/badge/GitHub_Pages-Live_Simulator-222222?style=for-the-badge&logo=githubpages&logoColor=white)](https://sakshitiwari-24.github.io/svanidhi-automation/)
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FSakshitiwari-24%2Fsvanidhi-automation)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
@@ -8,9 +8,9 @@
 
 > [!IMPORTANT]
 > **🌐 Highlighted Live URLs & Multi-System Script Hub:**
-> - **🚀 Live Vercel URL:** **[https://svanidhi-automation.vercel.app](https://svanidhi-automation.vercel.app)**
+> - **🚀 Live Vercel URL:** **[https://svanidhi-automation-sakshitiwari-24s-projects.vercel.app](https://svanidhi-automation-sakshitiwari-24s-projects.vercel.app)**
 > - **🌍 Live GitHub Pages Mirror:** **[https://sakshitiwari-24.github.io/svanidhi-automation/](https://sakshitiwari-24.github.io/svanidhi-automation/)**
-> - **🧪 Single-Form Mock Portal:** **[https://sakshitiwari-24.github.io/svanidhi-automation/mock_portal.html](https://sakshitiwari-24.github.io/svanidhi-automation/mock_portal.html)**
+> - **🧪 Single-Form Mock Portal:** **[https://svanidhi-automation-sakshitiwari-24s-projects.vercel.app/mock_portal.html](https://svanidhi-automation-sakshitiwari-24s-projects.vercel.app/mock_portal.html)**
 > - **📦 GitHub Repository:** **[https://github.com/Sakshitiwari-24/svanidhi-automation](https://github.com/Sakshitiwari-24/svanidhi-automation)**
 
 ---
