@@ -1,6 +1,7 @@
 # Exclude real beneficiary Excel workbooks & backups (PII protection)
 data.xlsx.xlsx
 *.backup-*.xlsx
+*.tmp
 
 # Exclude runtime logs and error screenshots
 logs/
@@ -19,3 +20,4 @@ env/
 .vercel/
 .vscode/
 .idea/
+
