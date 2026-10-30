@@ -1,14 +1,17 @@
 # 🏛️ PM SVANidhi — Vendor Scheme Tracker Automation Suite
 
-[![Deployment Status](https://img.shields.io/badge/Vercel-Live_Portal_%26_Script_Hub-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://svanidhi-automation.vercel.app)
+[![Vercel Live Hub](https://img.shields.io/badge/Vercel-Live_Portal_%26_Script_Hub-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://svanidhi-automation.vercel.app)
+[![GitHub Pages Live](https://img.shields.io/badge/GitHub_Pages-Live_Simulator-222222?style=for-the-badge&logo=githubpages&logoColor=white)](https://sakshitiwari-24.github.io/svanidhi-automation/)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FSakshitiwari-24%2Fsvanidhi-automation)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Playwright CDP](https://img.shields.io/badge/Playwright-Chrome_CDP_9222-2EAD33?style=for-the-badge&logo=google-chrome&logoColor=white)](https://playwright.dev/python/)
-[![OpenPyXL](https://img.shields.io/badge/Excel-Atomic_Sync-217346?style=for-the-badge&logo=microsoft-excel&logoColor=white)](https://openpyxl.readthedocs.io/)
 
 > [!IMPORTANT]
-> **🌐 Live Interactive Portal & Multi-System Script Hub:**
-> - **Live Vercel URL:** **[https://svanidhi-automation.vercel.app](https://svanidhi-automation.vercel.app)** *(Interactive Vendor Scheme Tracker Simulator + 1-Click Patched Script Downloads)*
-> - **Single-Form Mock Portal:** **[https://svanidhi-automation.vercel.app/mock_portal.html](https://svanidhi-automation.vercel.app/mock_portal.html)**
+> **🌐 Highlighted Live URLs & Multi-System Script Hub:**
+> - **🚀 Live Vercel URL:** **[https://svanidhi-automation.vercel.app](https://svanidhi-automation.vercel.app)**
+> - **🌍 Live GitHub Pages Mirror:** **[https://sakshitiwari-24.github.io/svanidhi-automation/](https://sakshitiwari-24.github.io/svanidhi-automation/)**
+> - **🧪 Single-Form Mock Portal:** **[https://sakshitiwari-24.github.io/svanidhi-automation/mock_portal.html](https://sakshitiwari-24.github.io/svanidhi-automation/mock_portal.html)**
+> - **📦 GitHub Repository:** **[https://github.com/Sakshitiwari-24/svanidhi-automation](https://github.com/Sakshitiwari-24/svanidhi-automation)**
 
 ---
 
@@ -78,9 +81,10 @@ python svanidhi_automation.py --excel data.xlsx.xlsx --sheet DFS
 ## 💻 Updating Across Multiple Systems
 
 > [!TIP]
-> Because this repository and the live Vercel hub host the latest patched scripts, you can update any other PC in two ways:
-> 1. **Via Browser (No Git needed):** Open the **Live Vercel URL** on the other PC and click **Download `svanidhi_automation.py`** and the `.bat` files into `SwanidhinData`.
-> 2. **Via Git:** Run `git pull` inside the project folder on each PC.
+> Because this repository and the live web hub host the latest patched scripts, you can update any other PC in three easy ways:
+> 1. **One-Click Auto-Updater (`0_UPDATE_SCRIPTS.bat`):** Double-click `0_UPDATE_SCRIPTS.bat` on any PC to automatically fetch the latest `svanidhi_automation.py`, `2_RUN_DRY_RUN.bat`, and `3_RUN_ON_REAL_PORTAL.bat` directly from GitHub.
+> 2. **Via Browser (No Git needed):** Open the **[Live Hub URL](https://sakshitiwari-24.github.io/svanidhi-automation/)** on the other PC and click **Download `svanidhi_automation.py`** and the `.bat` files into `SwanidhinData`.
+> 3. **Via Git:** Run `git pull` inside the project folder on each PC.
 
 ---
 
