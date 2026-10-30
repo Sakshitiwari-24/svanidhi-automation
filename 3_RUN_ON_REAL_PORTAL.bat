@@ -26,8 +26,8 @@ if "%SHEET%"=="" set SHEET=DFS
 set /p LIMIT="Enter number of applications to process (press Enter for 2, or type all): "
 if "%LIMIT%"=="" set LIMIT=2
 
-set /p WORKERS="Enter number of parallel tabs on this PC (press Enter for 3, or type 1): "
-if "%WORKERS%"=="" set WORKERS=3
+set /p WORKERS="Enter number of parallel tabs on this PC (press Enter for 5, or type 1-8): "
+if "%WORKERS%"=="" set WORKERS=5
 
 echo.
 if /i "%LIMIT%"=="all" (
