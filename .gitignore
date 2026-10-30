@@ -1,0 +1,21 @@
+# Exclude real beneficiary Excel workbooks & backups (PII protection)
+data.xlsx.xlsx
+*.backup-*.xlsx
+
+# Exclude runtime logs and error screenshots
+logs/
+log.txt
+Untitled-1.txt
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Vercel & IDE
+.vercel/
+.vscode/
+.idea/
