@@ -13,36 +13,14 @@ For every Application No. in data.xlsx that has rows with Status = "Eligible":
      (verifies the stage becomes "Sanctioned")
   4. Write "Sanction" into the Status column of that Excel row (only after the
      portal confirmed it), and save.
-It works for any number of schemes per application and is safe to re-run:
-rows already Applied / Sanctioned on the portal are resumed or skipped.
-
-One-time setup
---------------
-  pip install playwright openpyxl          (no "playwright install" needed)
-
-Every run
----------
-  1. Close data.xlsx in Excel (the script needs to save into it).
-  2. Start Chrome with a debugging port (Windows, run in Command Prompt or 1_START_CHROME.bat):
-       "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" ^
-         --remote-debugging-port=9222 --user-data-dir="C:\\chrome-svanidhi"
-  3. In THAT Chrome window log in to the portal yourself (captcha/OTP) and open
-     "Vendor Scheme Tracker".
-  4. First do a dry run (searches and reads only, no changes):
-       python svanidhi_automation.py --excel data.xlsx.xlsx --dry-run
-  5. Then a small real run, then the full run:
-       python svanidhi_automation.py --excel data.xlsx.xlsx --limit 2
-       python svanidhi_automation.py --excel data.xlsx.xlsx
-
-If a selector does not match your portal, run:
-       python svanidhi_automation.py --excel data.xlsx.xlsx --inspect PMS072615318872
-and send me the printed output; all selectors are in the SEL block below.
-
-Credentials are never read from the Excel sheet or stored by this script.
+It works for any number of schemes per application, supports parallel multi-tab
+execution (--workers N) on the same PC, and is safe to re-run: rows already
+Applied / Sanctioned on the portal are resumed or skipped.
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import re
 import shutil
@@ -54,7 +32,7 @@ from datetime import datetime
 from pathlib import Path
 
 from openpyxl import load_workbook
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 
 # =============================== CONFIG ======================================
 
@@ -70,15 +48,12 @@ PENDING_STATUS = "eligible"      # Excel Status that means "still to do"
 DONE_STATUS_TEXT = "Sanction"    # what gets written back after success
 
 # If Excel and portal spell a scheme differently, map them here (lower-case):
-#   {"pm jivan jyoti bima yojana": "pm jeevan jyoti bima yojana"}
 SCHEME_ALIASES: dict[str, str] = {
     "pm suraksha bima yojana for mother": "pm suraksha bima for mother",
     "pm suraksha bima yojana for father": "pm suraksha bima for father",
 }
 
 # Sanity check that the Reference No belongs to the scheme (catches shifted rows).
-# (keyword in scheme name, required prefix of reference no). Disable with
-# --no-prefix-check, or edit for other sheets (Labour, Health, WCD, Food).
 REF_PREFIX_RULES = [
     ("suraksha bima", "PMSBY"),
     ("jeevan jyoti", "PMJJBY"),
@@ -132,6 +107,13 @@ class Item:
 # ================================ EXCEL ======================================
 
 
+def save_excel_atomic(wb, path: Path):
+    """Writes to a temporary file first and atomically replaces path so closing the window mid-save never corrupts the workbook."""
+    tmp = path.with_name(path.name + ".tmp")
+    wb.save(tmp)
+    tmp.replace(path)
+
+
 def load_excel(path: Path, sheet: str):
     # Auto-detect if user passed data.xlsx but actual file on Windows is data.xlsx.xlsx
     if not path.exists():
@@ -140,9 +122,27 @@ def load_excel(path: Path, sheet: str):
             print(f"Notice: '{path.name}' was not found, using '{double_ext.name}' instead.")
             path = double_ext
 
-    wb = load_workbook(path)
+    try:
+        wb = load_workbook(path)
+    except Exception as e:
+        backups = sorted(path.parent.glob(f"{path.stem}.backup-*{path.suffix}"))
+        if not backups:
+            raise e
+        latest_backup = backups[-1]
+        print(f"Warning: '{path.name}' was interrupted during a save ({e}). Auto-recovering from '{latest_backup.name}'...")
+        shutil.copy2(latest_backup, path)
+        wb = load_workbook(path)
+        if sheet in wb.sheetnames:
+            ws_rec = wb[sheet]
+            for logf in sorted(Path("logs").glob("run-*.csv"))[-5:]:
+                try:
+                    for row in csv.DictReader(open(logf, encoding="utf-8")):
+                        if row.get("action") == "excel" and row.get("result") == "OK" and row.get("excel_row"):
+                            ws_rec.cell(int(row["excel_row"]), 6).value = DONE_STATUS_TEXT
+                except Exception:
+                    pass
+            save_excel_atomic(wb, path)
     if sheet not in wb.sheetnames:
-        # Check if double-ext file has the sheet
         double_ext = path.with_name(path.name + ".xlsx")
         if double_ext.exists() and double_ext != path:
             wb_alt = load_workbook(double_ext)
@@ -218,14 +218,34 @@ class Row:
     stage: str
 
 
-def app_input(page):
+async def prepare_tab(context, page):
+    """Disables CSS fade animations and enables CDP focus emulation so background tabs run at full speed."""
+    try:
+        cdp = await context.new_cdp_session(page)
+        await cdp.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
+    except Exception:
+        pass
+    try:
+        await page.evaluate("""() => {
+            if (!document.getElementById('svanidhi-fast-style')) {
+                const style = document.createElement('style');
+                style.id = 'svanidhi-fast-style';
+                style.textContent = '*, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }';
+                document.head.appendChild(style);
+            }
+        }""")
+    except Exception:
+        pass
+
+
+async def app_input(page):
     for s in SEL["app_input"]:
         loc = page.locator(s).first
-        if loc.count() and loc.is_visible():
+        if await loc.count() and await loc.is_visible():
             return loc
     # Fallback: filter row order is Vendor Name | Application No | Mobile No
     inputs = page.locator('input[type="text"], input:not([type])').locator("visible=true")
-    if inputs.count() >= 3:
+    if await inputs.count() >= 3:
         return inputs.nth(1)
     raise PortalError("Application No. search box not found (are you on Vendor Scheme Tracker and logged in?)")
 
@@ -249,29 +269,14 @@ def column_map(heads):
     return m
 
 
-def disable_animations(page):
-    """Disables CSS modal fade/transition animations so popups open and close in 0ms without affecting accuracy."""
-    try:
-        page.evaluate("""() => {
-            if (!document.getElementById('svanidhi-fast-style')) {
-                const style = document.createElement('style');
-                style.id = 'svanidhi-fast-style';
-                style.textContent = '*, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }';
-                document.head.appendChild(style);
-            }
-        }""")
-    except Exception:
-        pass
-
-
-def table(page):
+async def table(page):
     tbl = page.locator(SEL["table"]).first
-    tbl.wait_for(state="visible", timeout=10000)
+    await tbl.wait_for(state="visible", timeout=10000)
     return tbl
 
 
-def read_table(page):
-    data = page.evaluate("""() => {
+async def read_table(page):
+    data = await page.evaluate("""() => {
         const tbl = Array.from(document.querySelectorAll('table')).find(t =>
             /scheme\\s+stage/i.test(t.innerText || '')
         );
@@ -295,36 +300,36 @@ def read_table(page):
     return rows, col
 
 
-def footer_total(page):
+async def footer_total(page):
     try:
-        t = page.locator(r"text=/Showing\s+\d+\s+to\s+\d+\s+of\s+\d+\s+entries/i").first.inner_text(timeout=2000)
+        t = await page.locator(r"text=/Showing\s+\d+\s+to\s+\d+\s+of\s+\d+\s+entries/i").first.inner_text(timeout=2000)
         return int(re.search(r"of\s+(\d+)", t).group(1))
     except Exception:
         return None
 
 
-def set_max_page_size(page):
+async def set_max_page_size(page):
     try:
         sel = page.locator("select").filter(has=page.locator("option", has_text=re.compile("show entries", re.I))).first
-        opts = sel.locator("option").evaluate_all("els=>els.map(e=>[e.value,e.textContent.trim()])")
+        opts = await sel.locator("option").evaluate_all("els=>els.map(e=>[e.value,e.textContent.trim()])")
         nums = [(int(v), v) for v, t in opts if re.fullmatch(r"\d+", v or "")]
         if nums:
-            sel.select_option(value=max(nums)[1])
-            page.wait_for_timeout(1200)
-    except Exception as e:  # not fatal; the footer check below still guards us
+            await sel.select_option(value=max(nums)[1])
+            await page.wait_for_timeout(1000)
+    except Exception as e:
         print(f"   (could not change 'Show Entries': {e})")
 
 
-def search(page, app: str, delay: float):
-    inp = app_input(page)
-    inp.fill(app)
-    page.locator(SEL["search_btn"]).first.click()
+async def search(page, app: str, delay: float):
+    inp = await app_input(page)
+    await inp.fill(app)
+    await page.locator(SEL["search_btn"]).first.click()
     deadline = time.time() + 20
     rows = col = None
     while time.time() < deadline:
-        time.sleep(0.05)
+        await asyncio.sleep(0.05)
         try:
-            rows, col = read_table(page)
+            rows, col = await read_table(page)
         except Exception:
             continue
         # results must belong to the application we just searched (not the previous one)
@@ -334,15 +339,15 @@ def search(page, app: str, delay: float):
         raise PortalError(f"Search results for {app} did not load / no rows returned")
     # Pagination check only needed if 10+ rows are visible (minimum portal page size is 10)
     if len(rows) >= 10:
-        total = footer_total(page)
+        total = await footer_total(page)
         if total is not None and total != len(rows):
-            set_max_page_size(page)
-            rows, col = read_table(page)
-            total = footer_total(page)
+            await set_max_page_size(page)
+            rows, col = await read_table(page)
+            total = await footer_total(page)
             if total is not None and total != len(rows):
                 raise PortalError(f"Portal lists {total} entries but only {len(rows)} rows are visible (pagination)")
     if delay > 0:
-        time.sleep(delay)
+        await asyncio.sleep(delay)
     return rows, col
 
 
@@ -353,14 +358,14 @@ def pick_row(rows, app: str, scheme: str):
     return hits[0]
 
 
-def find_row(page, app: str, scheme: str):
-    rows, col = read_table(page)
+async def find_row(page, app: str, scheme: str):
+    rows, col = await read_table(page)
     return pick_row(rows, app, scheme), col
 
 
-def wait_dialog(page, text_regex: str, timeout=8000):
+async def wait_dialog(page, text_regex: str, timeout=8000):
     dlg = page.locator(SEL["dialog"]).filter(has_text=re.compile(text_regex, re.I)).first
-    dlg.wait_for(state="visible", timeout=timeout)
+    await dlg.wait_for(state="visible", timeout=timeout)
     return dlg
 
 
@@ -368,53 +373,55 @@ def dialog_button(dlg, label_regex: str):
     return dlg.locator(SEL["dialog_button"]).filter(has_text=re.compile(label_regex, re.I)).first
 
 
-def wait_stage(page, app: str, scheme: str, want: str, delay: float):
+async def wait_stage(page, app: str, scheme: str, want: str, delay: float):
     """Poll rapidly until the scheme row shows the wanted stage (re-pressing Search quickly if stale)."""
     for attempt in range(2):
         end = time.time() + (3.5 if attempt == 0 else 10)
         while time.time() < end:
-            time.sleep(0.05)
+            await asyncio.sleep(0.05)
             try:
-                rows, col = read_table(page)
+                rows, col = await read_table(page)
                 row = pick_row(rows, app, scheme)
             except Exception:
                 continue
             if row.stage == want:
                 if delay > 0:
-                    time.sleep(delay)
+                    await asyncio.sleep(delay)
                 return rows, col
-        page.locator(SEL["search_btn"]).first.click()
+        await page.locator(SEL["search_btn"]).first.click()
     raise PortalError(f"'{scheme}' did not reach stage '{want}'")
 
 
-def do_apply(page, app: str, scheme: str, ref: str, delay: float, row=None, col=None):
+async def do_apply(page, app: str, scheme: str, ref: str, delay: float, row=None, col=None):
     if row is None or col is None:
-        row, col = find_row(page, app, scheme)
-    cell = table(page).locator("tbody tr").nth(row.i).locator("td").nth(col["apply"])
-    cell.locator(SEL["icon"]).first.click()
-    dlg = wait_dialog(page, APPLY_DIALOG_TEXT)
+        row, col = await find_row(page, app, scheme)
+    tbl = await table(page)
+    cell = tbl.locator("tbody tr").nth(row.i).locator("td").nth(col["apply"])
+    await cell.locator(SEL["icon"]).first.click()
+    dlg = await wait_dialog(page, APPLY_DIALOG_TEXT)
     box = dlg.locator(SEL["dialog_input"]).first
-    box.fill(ref)
-    if box.input_value().strip() != ref:
+    await box.fill(ref)
+    if (await box.input_value()).strip() != ref:
         raise PortalError("Reference No was not typed correctly into the popup")
-    dialog_button(dlg, r"^\s*submit\s*$").click()
-    dlg.wait_for(state="hidden", timeout=10000)
-    return wait_stage(page, app, scheme, "applied", delay)
+    await dialog_button(dlg, r"^\s*submit\s*$").click()
+    await dlg.wait_for(state="hidden", timeout=10000)
+    return await wait_stage(page, app, scheme, "applied", delay)
 
 
-def do_sanction(page, app: str, scheme: str, delay: float, row=None, col=None):
+async def do_sanction(page, app: str, scheme: str, delay: float, row=None, col=None):
     if row is None or col is None:
-        row, col = find_row(page, app, scheme)
-    cell = table(page).locator("tbody tr").nth(row.i).locator("td").nth(col["sanction"])
-    cell.locator(SEL["icon"]).first.click()
-    dlg = wait_dialog(page, SANCTION_DIALOG_TEXT)
-    text = norm(dlg.inner_text())
+        row, col = await find_row(page, app, scheme)
+    tbl = await table(page)
+    cell = tbl.locator("tbody tr").nth(row.i).locator("td").nth(col["sanction"])
+    await cell.locator(SEL["icon"]).first.click()
+    dlg = await wait_dialog(page, SANCTION_DIALOG_TEXT)
+    text = norm(await dlg.inner_text())
     if "sanctioned" not in text:  # never confirm a Reject / unknown dialog
-        page.keyboard.press("Escape")
+        await page.keyboard.press("Escape")
         raise PortalError(f"Unexpected confirmation dialog: '{text[:80]}'")
-    dialog_button(dlg, r"^\s*yes\s*$").click()
-    dlg.wait_for(state="hidden", timeout=10000)
-    return wait_stage(page, app, scheme, "sanctioned", delay)
+    await dialog_button(dlg, r"^\s*yes\s*$").click()
+    await dlg.wait_for(state="hidden", timeout=10000)
+    return await wait_stage(page, app, scheme, "sanctioned", delay)
 
 
 # ============================== MAIN LOGIC ===================================
@@ -430,13 +437,14 @@ class Logger:
         self.w = csv.writer(self.f)
         self.w.writerow(["time", "excel_row", "application_no", "scheme", "action", "result", "detail"])
 
-    def __call__(self, row, app, scheme, action, result, detail=""):
+    def __call__(self, row, app, scheme, action, result, detail="", prefix=""):
         self.w.writerow([datetime.now().isoformat(timespec="seconds"), row, app, scheme, action, result, detail])
         self.f.flush()
-        print(f"   [{result:7}] {action:10} {scheme}  {detail}")
+        tag = f"{prefix} " if prefix else ""
+        print(f"   {tag}[{result:7}] {action:10} {scheme}  {detail}")
 
 
-def process_app(page, app, all_items, args, ws, cols, log):
+async def process_app(page, app, all_items, args, ws, cols, log, prefix=""):
     pending = [i for i in all_items if i.status == PENDING_STATUS]
 
     # ---- sanity checks on the Excel side
@@ -447,7 +455,7 @@ def process_app(page, app, all_items, args, ws, cols, log):
         check_ref(it, not args.no_prefix_check)
 
     # ---- search and reconcile with the portal
-    rows, col = search(page, app, args.delay)
+    rows, col = await search(page, app, args.delay)
     portal = Counter(r.scheme for r in rows)
     dup_p = [s for s, n in portal.items() if n > 1]
     if dup_p:
@@ -460,7 +468,8 @@ def process_app(page, app, all_items, args, ws, cols, log):
     if extra and args.strict_portal:
         raise PortalError(f"Scheme(s) on portal but not in Excel: {extra}")
     elif extra:
-        print(f"   [INFO   ] skip       Ignoring extra scheme(s) on portal not in Excel: {extra}")
+        tag = f"{prefix} " if prefix else ""
+        print(f"   {tag}[INFO   ] skip       Ignoring extra scheme(s) on portal not in Excel: {extra}")
 
     def stage_of(it):
         return next(r.stage for r in rows if r.scheme == it.scheme)
@@ -471,17 +480,17 @@ def process_app(page, app, all_items, args, ws, cols, log):
             st = stage_of(it)
             plan = {"eligible": f"apply ref {it.ref} then sanction",
                     "applied": "sanction only", "sanctioned": "already sanctioned -> mark Excel"}.get(st, f"UNEXPECTED stage '{st}'")
-            log(it.row, app, it.scheme_raw, "plan", "DRY", plan)
+            log(it.row, app, it.scheme_raw, "plan", "DRY", plan, prefix=prefix)
         return False
 
     # ---- phase 1: Apply (reference number entry)
     for it in pending:
         row = pick_row(rows, app, it.scheme)
         if row.stage == "eligible":
-            rows, col = do_apply(page, app, it.scheme, it.ref, args.delay, row=row, col=col)
-            log(it.row, app, it.scheme_raw, "apply", "OK", it.ref)
+            rows, col = await do_apply(page, app, it.scheme, it.ref, args.delay, row=row, col=col)
+            log(it.row, app, it.scheme_raw, "apply", "OK", it.ref, prefix=prefix)
         elif row.stage in ("applied", "sanctioned"):
-            log(it.row, app, it.scheme_raw, "apply", "SKIP", f"already {row.stage}")
+            log(it.row, app, it.scheme_raw, "apply", "SKIP", f"already {row.stage}", prefix=prefix)
         else:
             raise PortalError(f"'{it.scheme_raw}' has unexpected stage '{row.stage}'")
 
@@ -489,31 +498,31 @@ def process_app(page, app, all_items, args, ws, cols, log):
     for it in pending:
         row = pick_row(rows, app, it.scheme)
         if row.stage == "applied":
-            rows, col = do_sanction(page, app, it.scheme, args.delay, row=row, col=col)
-            log(it.row, app, it.scheme_raw, "sanction", "OK")
+            rows, col = await do_sanction(page, app, it.scheme, args.delay, row=row, col=col)
+            log(it.row, app, it.scheme_raw, "sanction", "OK", prefix=prefix)
         elif row.stage == "sanctioned":
-            log(it.row, app, it.scheme_raw, "sanction", "SKIP", "already sanctioned")
+            log(it.row, app, it.scheme_raw, "sanction", "SKIP", "already sanctioned", prefix=prefix)
         else:
             raise PortalError(f"'{it.scheme_raw}' is '{row.stage}', expected applied/sanctioned")
         # portal confirmed -> record in Excel memory
         ws.cell(it.row, cols["status"]).value = DONE_STATUS_TEXT
-        log(it.row, app, it.scheme_raw, "excel", "OK", f"Status -> {DONE_STATUS_TEXT}")
+        log(it.row, app, it.scheme_raw, "excel", "OK", f"Status -> {DONE_STATUS_TEXT}", prefix=prefix)
     return True
 
 
-def inspect(page, app, delay):
-    rows, col = search(page, app, delay)
-    tbl = table(page)
+async def inspect(page, app, delay):
+    rows, col = await search(page, app, delay)
+    tbl = await table(page)
     print("\nColumns:", col)
     print("Rows   :", [(r.scheme, r.stage) for r in rows])
-    print("\n--- THEAD ---\n", tbl.locator("thead").inner_html()[:1500])
-    print("\n--- FIRST ROW ---\n", tbl.locator("tbody tr").first.evaluate("e=>e.outerHTML")[:3000])
+    print("\n--- THEAD ---\n", (await tbl.locator("thead").inner_html())[:1500])
+    print("\n--- FIRST ROW ---\n", (await tbl.locator("tbody tr").first.evaluate("e=>e.outerHTML"))[:3000])
     print("\n--- SEARCH INPUTS ---")
-    for el in page.locator("input").all():
-        print(el.evaluate("e=>e.outerHTML")[:200])
+    for el in await page.locator("input").all():
+        print((await el.evaluate("e=>e.outerHTML"))[:200])
 
 
-def main():
+async def async_main():
     ap = argparse.ArgumentParser(description="PM SVANidhi Vendor Scheme Tracker automation")
     ap.add_argument("--excel", default="data.xlsx.xlsx", help="Path to Excel file (default: data.xlsx.xlsx)")
     ap.add_argument("--sheet", default="DFS", help="Worksheet name (default: DFS)")
@@ -521,6 +530,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="search and report only; change nothing")
     ap.add_argument("--limit", type=int, help="process at most N applications")
     ap.add_argument("--app", action="append", help="only this Application No. (repeatable)")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="number of parallel Chrome tabs to run simultaneously on this PC (default: 1, e.g. 3)")
     ap.add_argument("--delay", type=float, default=0.0, help="seconds to pause after each action (default: 0.0)")
     ap.add_argument("--save-every", type=int, default=5,
                     help="save Excel workbook every N completed applications (default: 5; always saves on exit/error)")
@@ -558,65 +569,107 @@ def main():
         todo = [a for a in todo if a in wanted]
     if args.limit:
         todo = todo[: args.limit]
+
+    num_workers = max(1, min(args.workers, len(todo) if todo else 1))
     print(f"{len(todo)} application(s) to process "
-          f"({sum(1 for a in todo for i in groups[a] if i.status == PENDING_STATUS)} scheme rows)")
+          f"({sum(1 for a in todo for i in groups[a] if i.status == PENDING_STATUS)} scheme rows) "
+          f"using {num_workers} parallel tab(s)")
 
     log = Logger(Path(args.logdir))
     ok, failed = [], []
     unsaved_changes = 0
     save_every = max(1, args.save_every)
+    stop_flag = False
 
     try:
-        with sync_playwright() as p:
+        async with async_playwright() as p:
             try:
-                browser = p.chromium.connect_over_cdp(args.cdp)
+                browser = await p.chromium.connect_over_cdp(args.cdp)
             except Exception as e:
                 sys.exit(f"Cannot connect to Chrome at {args.cdp}. Start Chrome with --remote-debugging-port=9222.\n{e}")
             pages = [pg for c in browser.contexts for pg in c.pages]
-            page = next((pg for pg in pages if any(k in pg.url.lower() for k in ["schemestracker", "scheme-tracker", "vendor-scheme", "tracker"])), None)
-            if page is None:
+            tracker_pages = [
+                pg for pg in pages
+                if any(k in pg.url.lower() for k in ["schemestracker", "scheme-tracker", "vendor-scheme", "tracker"])
+            ]
+            if not tracker_pages:
                 print("ERROR: Could not find the 'Vendor Scheme Tracker' page tab in Chrome.")
                 print("Currently open tabs:")
                 for i, pg in enumerate(pages, 1):
                     try:
-                        print(f"  [{i}] {pg.title()} -> {pg.url}")
+                        print(f"  [{i}] {await pg.title()} -> {pg.url}")
                     except Exception:
                         print(f"  [{i}] {pg.url}")
                 sys.exit("\nPlease log in and navigate to the 'Vendor Scheme Tracker' page in that Chrome window first.")
-            page.bring_to_front()
-            disable_animations(page)
+
+            base_page = tracker_pages[0]
+            base_url = base_page.url
+            ctx = base_page.context
 
             if args.inspect:
-                inspect(page, appkey(args.inspect), args.delay)
+                await base_page.bring_to_front()
+                await prepare_tab(ctx, base_page)
+                await inspect(base_page, appkey(args.inspect), args.delay)
                 return
 
+            # Open additional Vendor Scheme Tracker tabs if --workers > len(tracker_pages)
+            while len(tracker_pages) < num_workers:
+                tab_idx = len(tracker_pages) + 1
+                print(f"[INFO] Opening parallel Vendor Scheme Tracker Tab #{tab_idx}...")
+                new_pg = await ctx.new_page()
+                await new_pg.goto(base_url, wait_until="domcontentloaded", timeout=30000)
+                await table(new_pg)
+                tracker_pages.append(new_pg)
+
+            worker_pages = tracker_pages[:num_workers]
+            for pg in worker_pages:
+                await prepare_tab(ctx, pg)
+
+            queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
             for n, app in enumerate(todo, 1):
-                vendor = groups[app][0].vendor
-                print(f"\n[{n}/{len(todo)}] {app}  {vendor}")
-                try:
-                    dirty = process_app(page, app, groups[app], args, ws, cols, log)
-                    ok.append(app)
-                    if dirty:
-                        unsaved_changes += 1
-                        if unsaved_changes >= save_every:
-                            wb.save(xlsx)
-                            unsaved_changes = 0
-                except PermissionError:
-                    sys.exit(f"Could not save Excel file '{xlsx.name}' (is it open in Excel?). Stopped; re-run is safe.")
-                except Exception as e:
-                    failed.append((app, str(e)))
-                    log("", app, "", "app", "ERROR", str(e))
+                queue.put_nowait((n, app))
+
+            async def worker_loop(worker_id: int, pg):
+                nonlocal unsaved_changes, stop_flag
+                prefix = f"[Tab {worker_id}]" if num_workers > 1 else ""
+                while not queue.empty() and not stop_flag:
                     try:
-                        page.screenshot(path=str(log.dir / f"error-{app}-{datetime.now():%H%M%S}.png"))
-                        page.keyboard.press("Escape")
-                    except Exception:
-                        pass
-                    if args.stop_on_error:
+                        n, app = queue.get_nowait()
+                    except asyncio.QueueEmpty:
                         break
+                    vendor = groups[app][0].vendor
+                    tag = f"{prefix} " if prefix else ""
+                    print(f"\n{tag}[{n}/{len(todo)}] {app}  {vendor}")
+                    try:
+                        dirty = await process_app(pg, app, groups[app], args, ws, cols, log, prefix=prefix)
+                        ok.append(app)
+                        if dirty:
+                            unsaved_changes += 1
+                            if unsaved_changes >= save_every:
+                                save_excel_atomic(wb, xlsx)
+                                unsaved_changes = 0
+                    except PermissionError:
+                        stop_flag = True
+                        sys.exit(f"Could not save Excel file '{xlsx.name}' (is it open in Excel?). Stopped; re-run is safe.")
+                    except Exception as e:
+                        failed.append((app, str(e)))
+                        log("", app, "", "app", "ERROR", str(e), prefix=prefix)
+                        try:
+                            await pg.screenshot(path=str(log.dir / f"error-{app}-{datetime.now():%H%M%S}.png"))
+                            await pg.keyboard.press("Escape")
+                        except Exception:
+                            pass
+                        if args.stop_on_error:
+                            stop_flag = True
+                            break
+                    finally:
+                        queue.task_done()
+
+            await asyncio.gather(*(worker_loop(i + 1, pg) for i, pg in enumerate(worker_pages)))
     finally:
         if unsaved_changes > 0 and not args.dry_run and not args.inspect:
             try:
-                wb.save(xlsx)
+                save_excel_atomic(wb, xlsx)
                 print(f"\n[SAVED] Flushed final Excel updates to '{xlsx.name}'.")
             except Exception as e:
                 print(f"\n[ERROR] Could not save final Excel updates to '{xlsx.name}': {e}")
@@ -627,6 +680,10 @@ def main():
     for a, msg in failed:
         print(f"  - {a}: {msg}")
     print(f"Log file  : {log.path}")
+
+
+def main():
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":
