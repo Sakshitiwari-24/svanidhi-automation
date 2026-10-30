@@ -29,13 +29,16 @@ if "%SHEET%"=="" set SHEET=DFS
 set /p LIMIT="Enter number of applications to test (press Enter for 5, or type all): "
 if "%LIMIT%"=="" set LIMIT=5
 
+set /p WORKERS="Enter number of parallel tabs on this PC (press Enter for 3, or type 1): "
+if "%WORKERS%"=="" set WORKERS=3
+
 echo.
 if /i "%LIMIT%"=="all" (
-    echo [RUNNING DRY RUN - ENTIRE SHEET %SHEET%]
-    %PYTHON_EXE% svanidhi_automation.py --excel data.xlsx.xlsx --sheet %SHEET% --dry-run --allow-extra-portal
+    echo [RUNNING DRY RUN - ENTIRE SHEET %SHEET% WITH %WORKERS% PARALLEL TABS]
+    %PYTHON_EXE% svanidhi_automation.py --excel data.xlsx.xlsx --sheet %SHEET% --dry-run --workers %WORKERS% --allow-extra-portal
 ) else (
-    echo [RUNNING DRY RUN - %LIMIT% APPLICATIONS ON SHEET %SHEET%]
-    %PYTHON_EXE% svanidhi_automation.py --excel data.xlsx.xlsx --sheet %SHEET% --dry-run --limit %LIMIT% --allow-extra-portal
+    echo [RUNNING DRY RUN - %LIMIT% APPLICATIONS ON SHEET %SHEET% WITH %WORKERS% PARALLEL TABS]
+    %PYTHON_EXE% svanidhi_automation.py --excel data.xlsx.xlsx --sheet %SHEET% --dry-run --limit %LIMIT% --workers %WORKERS% --allow-extra-portal
 )
 
 echo.
