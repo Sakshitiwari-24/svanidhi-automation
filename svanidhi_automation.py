@@ -320,14 +320,33 @@ async def set_max_page_size(page):
         print(f"   (could not change 'Show Entries': {e})")
 
 
+async def wait_not_loading(page, timeout=15.0):
+    """Polls every 30ms until the Angular <ngx-loading> backdrop is gone so Playwright never hits 500ms click retry backoffs."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            busy = await page.evaluate("""() => {
+                const b = document.querySelector('ngx-loading .backdrop, .ngx-loading-backdrop');
+                if (!b) return false;
+                const s = window.getComputedStyle(b);
+                return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0' && b.offsetWidth > 0;
+            }""")
+            if not busy:
+                return
+        except Exception:
+            return
+        await asyncio.sleep(0.03)
+
+
 async def search(page, app: str, delay: float):
+    await wait_not_loading(page)
     inp = await app_input(page)
     await inp.fill(app)
     await page.locator(SEL["search_btn"]).first.click()
     deadline = time.time() + 20
     rows = col = None
     while time.time() < deadline:
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.04)
         try:
             rows, col = await read_table(page)
         except Exception:
@@ -374,25 +393,28 @@ def dialog_button(dlg, label_regex: str):
 
 
 async def wait_stage(page, app: str, scheme: str, want: str, delay: float):
-    """Poll rapidly until the scheme row shows the wanted stage (re-pressing Search quickly if stale)."""
+    """Poll every 40ms until the scheme row shows the wanted stage (only re-pressing Search if truly stale after 12s)."""
     for attempt in range(2):
-        end = time.time() + (3.5 if attempt == 0 else 10)
+        end = time.time() + (12.0 if attempt == 0 else 10.0)
         while time.time() < end:
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.04)
             try:
                 rows, col = await read_table(page)
                 row = pick_row(rows, app, scheme)
             except Exception:
                 continue
             if row.stage == want:
+                await wait_not_loading(page)
                 if delay > 0:
                     await asyncio.sleep(delay)
                 return rows, col
+        await wait_not_loading(page)
         await page.locator(SEL["search_btn"]).first.click()
     raise PortalError(f"'{scheme}' did not reach stage '{want}'")
 
 
 async def do_apply(page, app: str, scheme: str, ref: str, delay: float, row=None, col=None):
+    await wait_not_loading(page)
     if row is None or col is None:
         row, col = await find_row(page, app, scheme)
     tbl = await table(page)
@@ -409,6 +431,7 @@ async def do_apply(page, app: str, scheme: str, ref: str, delay: float, row=None
 
 
 async def do_sanction(page, app: str, scheme: str, delay: float, row=None, col=None):
+    await wait_not_loading(page)
     if row is None or col is None:
         row, col = await find_row(page, app, scheme)
     tbl = await table(page)
