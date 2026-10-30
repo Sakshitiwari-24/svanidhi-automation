@@ -26,13 +26,16 @@ if "%SHEET%"=="" set SHEET=DFS
 set /p LIMIT="Enter number of applications to process (press Enter for 2, or type all): "
 if "%LIMIT%"=="" set LIMIT=2
 
+set /p WORKERS="Enter number of parallel tabs on this PC (press Enter for 3, or type 1): "
+if "%WORKERS%"=="" set WORKERS=3
+
 echo.
 if /i "%LIMIT%"=="all" (
-    echo [RUNNING FULL BATCH ON SHEET: %SHEET%]
-    %PYTHON_EXE% svanidhi_automation.py --excel data.xlsx.xlsx --sheet %SHEET% --allow-extra-portal
+    echo [RUNNING FULL BATCH ON SHEET: %SHEET% WITH %WORKERS% PARALLEL TABS]
+    %PYTHON_EXE% svanidhi_automation.py --excel data.xlsx.xlsx --sheet %SHEET% --workers %WORKERS% --allow-extra-portal
 ) else (
-    echo [RUNNING WITH LIMIT = %LIMIT% ON SHEET: %SHEET%]
-    %PYTHON_EXE% svanidhi_automation.py --excel data.xlsx.xlsx --sheet %SHEET% --limit %LIMIT% --allow-extra-portal
+    echo [RUNNING WITH LIMIT = %LIMIT% ON SHEET: %SHEET% WITH %WORKERS% PARALLEL TABS]
+    %PYTHON_EXE% svanidhi_automation.py --excel data.xlsx.xlsx --sheet %SHEET% --limit %LIMIT% --workers %WORKERS% --allow-extra-portal
 )
 
 echo.
